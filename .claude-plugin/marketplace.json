@@ -1,0 +1,19 @@
+{
+  "$schema": "https://code.claude.com/schemas/marketplace.json",
+  "name": "agentx402",
+  "owner": {
+    "name": "agentx402",
+    "url": "https://agentx402.ai"
+  },
+  "plugins": [
+    {
+      "name": "agentkv",
+      "source": {
+        "source": "git-subdir",
+        "url": "agentx402-ai/agentkv",
+        "path": "plugin/agentkv"
+      },
+      "description": "Agent-native encrypted KV store paid via x402. Persistent cross-session memory, encrypted secret storage, and shared fleet state — keyed by wallet address, zero-knowledge to the server."
+    }
+  ]
+}
