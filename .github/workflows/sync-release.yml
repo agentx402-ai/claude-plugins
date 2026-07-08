@@ -1,0 +1,82 @@
+name: Sync plugin release
+
+# Pins a plugin's git-subdir `source.ref` in marketplace.json to a released tag, so the
+# marketplace serves that exact plugin version. Trigger manually after tagging a product
+# release, or automatically via repository_dispatch from the product repo's release workflow.
+#
+#   gh workflow run sync-release.yml -R agentx402-ai/claude-plugins -f plugin=agentkv -f ref=v0.1.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      plugin:
+        description: Plugin name as it appears in marketplace.json
+        required: true
+        default: agentkv
+      ref:
+        description: Git tag/ref to pin (e.g. v0.1.0)
+        required: true
+  repository_dispatch:
+    types: [plugin-release]
+
+permissions:
+  contents: write
+
+concurrency: sync-marketplace
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Route inputs through env (never interpolate ${{ }} straight into shell — injection-safe).
+      - id: resolve
+        env:
+          EVENT: ${{ github.event_name }}
+          DISPATCH_PLUGIN: ${{ github.event.client_payload.plugin }}
+          DISPATCH_REF: ${{ github.event.client_payload.ref }}
+          INPUT_PLUGIN: ${{ inputs.plugin }}
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = repository_dispatch ]; then
+            PLUGIN=$DISPATCH_PLUGIN; REF=$DISPATCH_REF
+          else
+            PLUGIN=$INPUT_PLUGIN; REF=$INPUT_REF
+          fi
+          case "$PLUGIN" in ''|*[!A-Za-z0-9._-]*) echo "::error::invalid plugin name: '$PLUGIN'"; exit 1;; esac
+          case "$REF"    in ''|*[!A-Za-z0-9._/-]*) echo "::error::invalid ref: '$REF'"; exit 1;; esac
+          echo "plugin=$PLUGIN" >> "$GITHUB_OUTPUT"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Pin ref in marketplace.json
+        env:
+          PLUGIN: ${{ steps.resolve.outputs.plugin }}
+          REF: ${{ steps.resolve.outputs.ref }}
+        run: |
+          set -euo pipefail
+          f=.claude-plugin/marketplace.json
+          if [ "$(jq --arg p "$PLUGIN" '[.plugins[] | select(.name==$p)] | length' "$f")" != "1" ]; then
+            echo "::error::plugin '$PLUGIN' not found (or duplicated) in $f"; exit 1
+          fi
+          tmp=$(mktemp)
+          jq --arg p "$PLUGIN" --arg r "$REF" \
+            '(.plugins[] | select(.name==$p) | .source.ref) = $r' "$f" > "$tmp"
+          mv "$tmp" "$f"
+          jq empty "$f"   # fail on malformed output
+
+      - name: Commit if changed
+        env:
+          PLUGIN: ${{ steps.resolve.outputs.plugin }}
+          REF: ${{ steps.resolve.outputs.ref }}
+        run: |
+          set -euo pipefail
+          git config user.name "AgentKV"
+          git config user.email "contact@agentx402.ai"
+          if git diff --quiet -- .claude-plugin/marketplace.json; then
+            echo "already pinned to $REF — nothing to do"; exit 0
+          fi
+          git add .claude-plugin/marketplace.json
+          git commit -m "chore: pin $PLUGIN to $REF"
+          git push
