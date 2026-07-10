@@ -12,7 +12,7 @@
         "source": "git-subdir",
         "url": "agentx402-ai/agentkv",
         "path": "plugin/agentkv",
-        "ref": "v0.1.0"
+        "ref": "v0.2.0"
       },
       "description": "Agent-native encrypted KV store paid via x402. Persistent cross-session memory, encrypted secret storage, and shared fleet state — keyed by wallet address, zero-knowledge to the server."
     }
