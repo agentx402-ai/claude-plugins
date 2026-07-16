@@ -15,6 +15,16 @@
         "ref": "v0.2.1"
       },
       "description": "Agent-native encrypted KV store paid via x402. Persistent cross-session memory, encrypted secret storage, and shared fleet state — keyed by wallet address, zero-knowledge to the server."
+    },
+    {
+      "name": "agentscout",
+      "source": {
+        "source": "git-subdir",
+        "url": "agentx402-ai/agentscout",
+        "path": "plugin/agentscout",
+        "ref": "main"
+      },
+      "description": "Agent-native web read/extract/crawl paid via x402. Fetch any URL to clean markdown, extract structured JSON against a caller schema, or crawl a site — pay per fetch in USDC, no accounts or API keys."
     }
   ]
 }
