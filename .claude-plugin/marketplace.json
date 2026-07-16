@@ -22,7 +22,7 @@
         "source": "git-subdir",
         "url": "agentx402-ai/agentscout",
         "path": "plugin/agentscout",
-        "ref": "main"
+        "ref": "v0.1.0"
       },
       "description": "Agent-native web read/extract/crawl paid via x402. Fetch any URL to clean markdown, extract structured JSON against a caller schema, or crawl a site — pay per fetch in USDC, no accounts or API keys."
     }
