@@ -22,13 +22,34 @@ on:
 permissions:
   contents: write
 
+# Serializes this workflow against itself so two plugin releases cannot interleave their
+# read-modify-write of marketplace.json. This is necessary but NOT sufficient on its own —
+# see the `ref:` note on the checkout below for the half it cannot fix.
+# NOTE on queue depth: GitHub holds exactly one pending run per group. If a third dispatch
+# arrives while one is running and one is pending, the PENDING one is cancelled — a silently
+# unsynced pin. With two plugins that cannot happen; if a third is ever registered here,
+# revisit this (a cancelled run reports no failure, so nothing would alert).
 concurrency: sync-marketplace
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # `ref: main` is LOAD-BEARING, do not remove. Without it checkout restores GITHUB_SHA,
+      # which for repository_dispatch is the default branch's SHA at the moment the EVENT WAS
+      # CREATED — not when the job runs. So two releases dispatched seconds apart both check
+      # out the same pre-race commit; the second rebuilds a branch one commit behind and its
+      # push is rejected. Observed 2026-07-30: agentkv v0.3.1 and agentscout v0.4.0 dispatched
+      # 4s apart (runs 30576514739 / 30576519647), both pinned to ff391f35. The concurrency
+      # group DID serialize them — the second waited 116s — but serialization cannot help a run
+      # pinned to a snapshot taken before it queued. Naming the branch makes the checkout
+      # resolve at job start, after the queue.
+      #   This is also why "Re-run failed jobs" can never fix such a run: a re-run replays the
+      #   original event and restores the same stale SHA. Recovery is a fresh dispatch.
+      # persist-credentials stays at its default (true) — the push below needs that token.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
 
       # Route inputs through env (never interpolate ${{ }} straight into shell — injection-safe).
       - id: resolve
@@ -50,33 +71,56 @@ jobs:
           echo "plugin=$PLUGIN" >> "$GITHUB_OUTPUT"
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
 
-      - name: Pin ref in marketplace.json
+      # Pin, commit and push as ONE retryable unit. The concurrency group serializes this
+      # workflow against itself, but not against a human or another workflow pushing to main
+      # between our checkout and our push, so the rejection is still reachable.
+      #
+      # Each attempt re-derives the edit from the CURRENT tip rather than rebasing a stale
+      # commit. The desired file state is a pure function of (plugin, ref), so recomputing it
+      # can never conflict, whereas replaying a commit can — two plugins touch adjacent lines
+      # of the same JSON, and the same plugin pinned twice would collide outright.
+      - name: Pin ref in marketplace.json, then commit and push
         env:
           PLUGIN: ${{ steps.resolve.outputs.plugin }}
           REF: ${{ steps.resolve.outputs.ref }}
         run: |
           set -euo pipefail
           f=.claude-plugin/marketplace.json
-          if [ "$(jq --arg p "$PLUGIN" '[.plugins[] | select(.name==$p)] | length' "$f")" != "1" ]; then
-            echo "::error::plugin '$PLUGIN' not found (or duplicated) in $f"; exit 1
-          fi
-          tmp=$(mktemp)
-          jq --arg p "$PLUGIN" --arg r "$REF" \
-            '(.plugins[] | select(.name==$p) | .source.ref) = $r' "$f" > "$tmp"
-          mv "$tmp" "$f"
-          jq empty "$f"   # fail on malformed output
-
-      - name: Commit if changed
-        env:
-          PLUGIN: ${{ steps.resolve.outputs.plugin }}
-          REF: ${{ steps.resolve.outputs.ref }}
-        run: |
-          set -euo pipefail
           git config user.name "AgentKV"
           git config user.email "contact@agentx402.ai"
-          if git diff --quiet -- .claude-plugin/marketplace.json; then
-            echo "already pinned to $REF — nothing to do"; exit 0
-          fi
-          git add .claude-plugin/marketplace.json
-          git commit -m "chore: pin $PLUGIN to $REF"
-          git push
+
+          for attempt in 1 2 3; do
+            # FETCH_HEAD rather than origin/main: checkout is shallow by default and the
+            # remote-tracking ref is not guaranteed to be what we want. On attempt 1 this is a
+            # no-op against `ref: main` above; on a retry it is the whole point.
+            git fetch --quiet origin main
+            git reset --hard --quiet FETCH_HEAD
+
+            if [ "$(jq --arg p "$PLUGIN" '[.plugins[] | select(.name==$p)] | length' "$f")" != "1" ]; then
+              echo "::error::plugin '$PLUGIN' not found (or duplicated) in $f"; exit 1
+            fi
+            tmp=$(mktemp)
+            jq --arg p "$PLUGIN" --arg r "$REF" \
+              '(.plugins[] | select(.name==$p) | .source.ref) = $r' "$f" > "$tmp"
+            mv "$tmp" "$f"
+            jq empty "$f"   # fail on malformed output
+
+            # Checked against the freshly-reset tree, so this also covers the case where a
+            # concurrent run already pinned this exact plugin to this exact ref.
+            if git diff --quiet -- "$f"; then
+              echo "already pinned to $REF — nothing to do"; exit 0
+            fi
+            git add "$f"
+            git commit --quiet -m "chore: pin $PLUGIN to $REF"
+            if git push --quiet 2>"$RUNNER_TEMP/push-err"; then
+              echo "pinned $PLUGIN to $REF"; exit 0
+            fi
+            # Print git's own reason rather than asserting one. A non-fast-forward means a
+            # concurrent run landed first and the retry will fix it; anything else (auth, a
+            # branch rule) will exhaust all three attempts, and the operator needs to see WHY
+            # rather than be told a race that did not happen.
+            echo "push attempt $attempt/3 failed:"
+            sed 's/^/    /' "$RUNNER_TEMP/push-err" || true
+          done
+          echo "::error::could not push $PLUGIN=$REF after 3 attempts — see the git errors above"
+          exit 1
