@@ -32,7 +32,7 @@
         "source": "git-subdir",
         "url": "agentx402-ai/agentrag",
         "path": "plugin/agentrag",
-        "ref": "v0.1.1"
+        "ref": "v0.1.2"
       },
       "description": "AgentRAG: x402-paid retrieval-augmented generation for agents. Ingest your own documents or URLs into a collection (hybrid BM25 + vector search), then ask grounded questions against them — paid per call in USDC, no accounts or API keys."
     }
